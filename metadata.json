@@ -1,0 +1,6 @@
+{
+  "name": "Zayka Admin",
+  "description": "Admin panel for ZaykaChicken Cafe & Restaurant with real-time order tracking, fleet management, menu control, sales analytics, and Gemini AI assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
