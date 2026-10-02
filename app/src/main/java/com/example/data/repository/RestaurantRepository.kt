@@ -68,6 +68,9 @@ class RestaurantRepository(
                 seedDefaultDrivers()
             }
 
+            // Ensure Firebase authentication
+            firestoreSync.ensureAuthenticated()
+
             // Start Real-Time Live Sync with Zayka User App
             startRealtimeCloudSync()
         }

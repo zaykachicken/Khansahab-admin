@@ -12,8 +12,10 @@ import com.example.data.model.OrderType
 import com.example.data.model.PaymentMethod
 import com.example.data.model.PaymentStatus
 import com.example.data.model.RestaurantSettings
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +32,7 @@ class FirestoreSyncManager {
         try {
             FirebaseFirestore.getInstance()
         } catch (e: Exception) {
-            Log.w(TAG, "Firestore initialization error: ${e.message}")
+            Log.w(TAG, "Firestore initialization fallback: ${e.message}")
             null
         }
     }
@@ -38,18 +40,35 @@ class FirestoreSyncManager {
     val isConnected: Boolean
         get() = firestore != null
 
+    suspend fun ensureAuthenticated() = withContext(Dispatchers.IO) {
+        try {
+            val auth = FirebaseAuth.getInstance()
+            if (auth.currentUser == null) {
+                auth.signInAnonymously().await()
+                Log.d(TAG, "Firebase Auth anonymous sign-in success: ${auth.currentUser?.uid}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Firebase Auth sign-in status: ${e.message}")
+        }
+    }
+
     // ==================== REAL-TIME LISTENERS (USER APP -> ADMIN APP) ====================
 
     fun startListeningToOrders(
         onOrderReceived: (Order) -> Unit,
         onError: (Exception) -> Unit = {}
     ) {
+        val db = firestore ?: return
         try {
             ordersListener?.remove()
-            ordersListener = firestore?.collection("orders")
-                ?.addSnapshotListener { snapshot, error ->
+            ordersListener = db.collection("orders")
+                .addSnapshotListener { snapshot, error ->
                     if (error != null) {
-                        Log.e(TAG, "Orders snapshot error: ${error.message}", error)
+                        if (error.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                            Log.w(TAG, "Firestore permission notice: 'orders' collection access requires Firebase rules permission or authentication.")
+                        } else {
+                            Log.w(TAG, "Orders snapshot listener status: ${error.message}")
+                        }
                         onError(error)
                         return@addSnapshotListener
                     }
@@ -61,35 +80,42 @@ class FirestoreSyncManager {
                                 onOrderReceived(order)
                             }
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error parsing incoming order: ${e.message}", e)
+                            Log.w(TAG, "Error parsing incoming order: ${e.message}")
                         }
                     }
                 }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start orders listener: ${e.message}", e)
+            Log.w(TAG, "Failed to start orders listener: ${e.message}")
         }
     }
 
     fun startListeningToSettings(
         onSettingsReceived: (RestaurantSettings) -> Unit
     ) {
+        val db = firestore ?: return
         try {
             settingsListener?.remove()
-            settingsListener = firestore?.collection("restaurant_settings")
-                ?.document("general_settings")
-                ?.addSnapshotListener { snapshot, error ->
-                    if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+            settingsListener = db.collection("restaurant_settings")
+                .document("general_settings")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        if (error.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                            Log.w(TAG, "Firestore permission notice: 'restaurant_settings' access restricted.")
+                        }
+                        return@addSnapshotListener
+                    }
+                    if (snapshot == null || !snapshot.exists()) return@addSnapshotListener
                     try {
                         val settings = parseSettingsFromSnapshot(snapshot)
                         if (settings != null) {
                             onSettingsReceived(settings)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error parsing settings snapshot: ${e.message}", e)
+                        Log.w(TAG, "Error parsing settings snapshot: ${e.message}")
                     }
                 }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start settings listener: ${e.message}", e)
+            Log.w(TAG, "Failed to start settings listener: ${e.message}")
         }
     }
 
@@ -110,7 +136,7 @@ class FirestoreSyncManager {
             firestore?.collection("orders")?.document(order.id)?.set(orderMap, SetOptions.merge())?.await()
             true
         } catch (e: Exception) {
-            Log.w(TAG, "Sync order error for #${order.id}: ${e.message}")
+            Log.w(TAG, "Sync order notice for #${order.id}: ${e.message}")
             false
         }
     }
@@ -121,7 +147,7 @@ class FirestoreSyncManager {
             firestore?.collection("menu_items")?.document(item.id)?.set(itemMap, SetOptions.merge())?.await()
             true
         } catch (e: Exception) {
-            Log.w(TAG, "Sync menu item error for ${item.name}: ${e.message}")
+            Log.w(TAG, "Sync menu item notice for ${item.name}: ${e.message}")
             false
         }
     }
@@ -132,7 +158,7 @@ class FirestoreSyncManager {
             firestore?.collection("drivers")?.document(driver.id)?.set(driverMap, SetOptions.merge())?.await()
             true
         } catch (e: Exception) {
-            Log.w(TAG, "Sync driver error for ${driver.name}: ${e.message}")
+            Log.w(TAG, "Sync driver notice for ${driver.name}: ${e.message}")
             false
         }
     }
@@ -143,7 +169,7 @@ class FirestoreSyncManager {
             firestore?.collection("coupons")?.document(coupon.id)?.set(couponMap, SetOptions.merge())?.await()
             true
         } catch (e: Exception) {
-            Log.w(TAG, "Sync coupon error for ${coupon.code}: ${e.message}")
+            Log.w(TAG, "Sync coupon notice for ${coupon.code}: ${e.message}")
             false
         }
     }
@@ -154,7 +180,7 @@ class FirestoreSyncManager {
             firestore?.collection("restaurant_settings")?.document("general_settings")?.set(settingsMap, SetOptions.merge())?.await()
             true
         } catch (e: Exception) {
-            Log.w(TAG, "Sync settings error: ${e.message}")
+            Log.w(TAG, "Sync settings notice: ${e.message}")
             false
         }
     }
@@ -174,7 +200,7 @@ class FirestoreSyncManager {
             }
             batch.commit().await()
         } catch (e: Exception) {
-            Log.e(TAG, "Batch menu sync error: ${e.message}", e)
+            Log.w(TAG, "Batch menu sync notice: ${e.message}")
         }
         count
     }
@@ -192,7 +218,7 @@ class FirestoreSyncManager {
             }
             batch.commit().await()
         } catch (e: Exception) {
-            Log.e(TAG, "Batch coupon sync error: ${e.message}", e)
+            Log.w(TAG, "Batch coupon sync notice: ${e.message}")
         }
         count
     }
@@ -210,7 +236,7 @@ class FirestoreSyncManager {
             }
             batch.commit().await()
         } catch (e: Exception) {
-            Log.e(TAG, "Batch driver sync error: ${e.message}", e)
+            Log.w(TAG, "Batch driver sync notice: ${e.message}")
         }
         count
     }
